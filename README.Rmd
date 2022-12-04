@@ -13,7 +13,21 @@ knitr::opts_chunk$set(
 ```
 
 # VarSubnetDetection
-Detection of altered subnetworks using hotnet algorithm
+This supports the detection and analysis of altered subnetworks for epilepsy mutations using the hierarchical hotnet algorithm [@reyna2018hierarchical][https://github.com/raphael-group/hierarchical-hotnet.git]. The two WES epilepsy datasets CoGIE and EpiPGX were analyzed in the study [@may2018rare] and the loss-of-function and Non-synonmyous mutations were considered in this study.
 
-# Overview
-![](figures/rare_variant_wfl.png "workflow")
+
+# Study design
+![](figures/rare_variant_wfl.png "workflow"){width=40%}
+
+# Implementation details
+The datasets were received in-house. The analysis was carried out in two parts. 
+
+- In the first part, subnetworks and genes were detected for the above-mentioned datasets using the HPC cluster Iris at the University of Luxembourg [@VBCG_HPCS14].
+
+- In the second part, over-representation of detected genes and networks were further analyzed via the clusterProfiler [@clusterProfiler] functions in R. 
+
+
+# Contact
+For questions and comments, please contact sreyoc2999@gmail.com
+
+# References

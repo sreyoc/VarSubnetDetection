@@ -1,6 +1,6 @@
 ---
 output: github_document
-bibliography: manuscript/bibliography.bib
+bibliography: mechEPI_references.bib
 ---
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
@@ -14,3 +14,6 @@ knitr::opts_chunk$set(
 
 # VarSubnetDetection
 Detection of altered subnetworks using hotnet algorithm
+
+# Overview
+![](figures/rare_variant_wfl.png "workflow")

@@ -149,7 +149,7 @@ ssh_disconnect(session)
 session <- ssh_connect("schatterjee@access-iris.uni.lu:8022")
 file <- c( "consensus_edges.tsv", "consensus_nodes.tsv")
 scp_download(session, "~/mechEPI_variantAnalysis/hhotnet/epipgx/2nw_2sc_nonsyn/tmp/*", 
-             to = "~/Documents/mechEPI_variantAnalysis/results/epipgx/2nw_2sc_nonsyn/")
+             to = "~/Documents/workspace/projects/VarSubnetDetection/results/epipgx/2nw_2sc_nonsyn/")
 ssh_disconnect(session)
 
 

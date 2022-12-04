@@ -26,6 +26,12 @@ The datasets were received in-house. The analysis was carried out in two parts.
 
 - In the second part, over-representation of detected genes and networks were further analyzed via the clusterProfiler [@clusterProfiler] functions in R. 
 
+For network construction, gene interaction information were considered from the following public databases,  
+
+- STRING [@szklarczyk2019string]
+- humanbase [@krishnan2016genome]
+- Reactome [@fabregat2018reactome]
+
 
 # Contact
 For questions and comments, please contact sreyoc2999@gmail.com

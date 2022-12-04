@@ -137,15 +137,6 @@ ssh_disconnect(session)
 
 ## Over-representation analysis for CoGIE
 
-
-
-
-
-
-
-
-
-
 ## hb trial for now
 
 ## index gene file
@@ -185,7 +176,8 @@ ssh_disconnect(session)
 ## Download from cluster
 session <- ssh_connect("schatterjee@access-iris.uni.lu:8022")
 file <- c( "consensus_edges.tsv", "consensus_nodes.tsv")
-scp_download(session, "~/mechEPI_variantAnalysis/hhotnet/cogie/2nw_2sc_nonsyn/tmp/*", to = "~/Documents/mechEPI_variantAnalysis/results/cogie/2nw_2sc_nonsyn/")
+scp_download(session, "~/mechEPI_variantAnalysis/hhotnet/cogie/2nw_2sc_nonsyn/tmp/*", 
+             to = "~/Documents/workspace/projects/VarSubnetDetection/results/cogie/2nw_2sc_nonsyn/")
 ssh_disconnect(session)
 
 

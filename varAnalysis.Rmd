@@ -1,0 +1,717 @@
+---
+title: "MechEPI Variant Analysis"
+author: "Sreyoshi Chatterjee"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+    html_document:
+    toc: TRUE
+    number_sections: TRUE
+    fig_crop: NO
+bibliography: mechEPI_references.bib
+---
+<style type="text/css">
+.main-container {
+  max-width: 1800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r,echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+# source("epipgx_varAnalysis.R", echo=FALSE)
+knitr::read_chunk("cogie_varAnalysis.R")
+knitr::read_chunk('epipgx_varAnalysis.R')
+```
+
+
+```{r library_loading, echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+library(tidyverse)
+library(here)
+library(kableExtra)
+library(ssh)
+library(clusterProfiler)
+library("org.Hs.eg.db")
+library(DOSE)
+```
+
+
+```{r interactions_db,echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# Interaction databases : String DB, Reactome (to be included later)
+
+int_db_cogie <- data.frame(Db = c("Vertices", "Edges"),
+                     String = c( 10087, 345476 ),
+                     Reactome = c(8004, 132497))
+
+int_db <- data.frame(Db = c("String", "Reactome", "String", "Reactome"),
+                           "Vertices" = c(10087, 8004, 11084, 10901),
+                           "Edges" = c(345476, 132497, 404402, 173576))
+
+int_db_epipgx <- data.frame(Db = c("Vertices", "Edges"),
+                     String = c( 10087, 345476 ),
+                     Reactome = c(8004, 132497))
+
+```
+
+```{r diagram, echo=FALSE, warning=FALSE, message=FALSE, out.width= "400px", out.height="400px", fig.align='center'}
+knitr::include_graphics("/Users/sreyoshi.chatterjee/Documents/workspace/projects/VarSubnetDetection/diagram/diagram.001.jpeg")
+```
+
+
+
+```{r data_string, echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+## Load the interaction data
+string_hs_interaction <- read.table(here("9606.protein.links.v11.0.txt"), header = TRUE)
+string_hs_geneNames <- read_delim(here("9606.protein.info.v11.0.txt"), delim = "\t")
+
+string_hs_interaction_geneNames <- 
+  string_hs_interaction %>% 
+  dplyr::inner_join(string_hs_geneNames, by = c("protein1" = "protein_external_id")) %>%
+  filter(combined_score > 700) %>% 
+  dplyr::select(-protein_size, -annotation, -combined_score) %>% 
+  dplyr::rename(GeneA= preferred_name) %>% 
+  inner_join(string_hs_geneNames, by = c("protein2" = "protein_external_id")) %>%    dplyr::rename(GeneB = preferred_name) %>% dplyr::select(GeneA, GeneB)
+```
+
+
+```{r data_reactome, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+reactome_hs_interaction <- read_delim(here("reactome", "FIsInGene_020720_with_annotations.txt"), delim="\t",col_names = TRUE)
+## In this interaction dataset, we consider scores >= 0.75, as mentioned by hierarchical hotnet
+reactome_hs_interaction_genenames <- reactome_hs_interaction %>% 
+  filter(Score >= 0.75) %>% 
+  dplyr::select(Gene1, Gene2)
+```
+
+
+```{r data_cogie, echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+## Load the tsv files
+cogie_lof <- read_tsv(here::here("pvalues","cogie_lof.tsv")) %>% dplyr::select(Range, PvalueTwoSide)
+cogie_nonsyn <- read_tsv(here::here("pvalues", "cogie_nonsyn.tsv")) %>% dplyr::select(Range, PvalueTwoSide)
+cogie_syn <- read_tsv(here::here("pvalues", "cogie_synonymous.tsv")) %>% dplyr::select(Range, PvalueTwoSide)
+
+##  Select the minimum of the pvalues as heat scores
+
+#cogie_scores <- cogie_lof %>% full_join(cogie_nonsyn, by = "Range") %>% 
+#  mutate(scores = ifelse(PvalueTwoSide.x <= PvalueTwoSide.y & is.na(PvalueTwoSide.x) ==   FALSE | is.na(PvalueTwoSide.y) == TRUE, PvalueTwoSide.x, PvalueTwoSide.y)) %>%  select(Range, scores) %>% full_join(cogie_syn, by = "Range") %>% 
+#  mutate(heat_scores = ifelse(scores <= PvalueTwoSide & is.na(scores) == FALSE | is.na(PvalueTwoSide), scores, PvalueTwoSide)) %>% select(Range, heat_scores)
+
+## Cogie scores by not including the synonymous mutations.
+
+cogie_scores <- cogie_lof %>% full_join(cogie_nonsyn, by = "Range") %>% 
+  mutate(scores = ifelse(PvalueTwoSide.x <= PvalueTwoSide.y & is.na(PvalueTwoSide.x) ==   FALSE | is.na(PvalueTwoSide.y) == TRUE, PvalueTwoSide.x, PvalueTwoSide.y)) %>%  dplyr::select(Range, scores) %>% 
+  mutate(hscores = round(-log10(scores), 1)) %>% 
+  dplyr::select(-scores)
+```
+
+
+```{r cogie_string, echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+## Create the index-gene file
+index_gene_stringhs <- string_hs_interaction_geneNames %>% dplyr::select(GeneA) %>% distinct(GeneA, .keep_all = TRUE) %>% rowid_to_column(var = "ID") 
+
+## Create the edge-list file
+edge_list_stringhs <- string_hs_interaction_geneNames %>%  
+  left_join(index_gene_stringhs, by = "GeneA") %>% dplyr::select(ID, everything()) %>% 
+  left_join(index_gene_stringhs, by = c("GeneB" = "GeneA")) %>% dplyr::select(ID.x, ID.y)
+
+### 
+
+# length(intersect(index_gene_stringhs$GeneA, cogie_scores$Range))
+
+common_indexString_hs <- intersect(index_gene_stringhs$GeneA, cogie_scores$Range)
+
+index_gene_sub <- index_gene_stringhs %>% 
+  filter(GeneA %in% common_indexString_hs) %>% dplyr::select(GeneA) %>% 
+  distinct(GeneA, .keep_all = T)  %>% rowid_to_column(var = "ID") 
+
+#cogie_scores_sub <- cogie_scores %>% 
+#  filter(Range %in% common_indexString_hs) %>% 
+#  mutate(hscores = round(-log10(scores), 1)) %>% 
+#  dplyr::select(-scores) 
+
+
+#edge_list_sub <- string_hs_interaction_geneNames %>% 
+#  left_join(index_gene_sub, by = "GeneA") %>% dplyr::select(ID, everything()) %>% 
+#  left_join(index_gene_sub, by = c("GeneB" = "GeneA"))%>% 
+#  select(ID.x, ID.y) %>%
+#  drop_na() %>% distinct()
+
+edge_list_sub <- index_gene_sub %>% inner_join(string_hs_interaction_geneNames, by = "GeneA") %>% inner_join(index_gene_sub, by = c("GeneB" = "GeneA")) %>% 
+  dplyr::select(ID.x, ID.y) %>% 
+  drop_na() %>% distinct()
+
+network_sub <- index_gene_sub %>% inner_join(string_hs_interaction_geneNames, by = "GeneA") %>% inner_join(index_gene_sub, by = c("GeneB" = "GeneA")) %>% 
+  dplyr::select(GeneA, GeneB) %>% 
+  drop_na() %>% distinct()
+
+## Inspite of all the care, there are some genes which do not have any edges connected to the ones presenty in the list of index gene i.e the ones which have been shortlisted by the CoGIE dataset. 666 genes get lost somehow. Therefore, there is no other choice than to remove them forcibly. Hence,
+noedge_genes <- as_tibble(setdiff(index_gene_sub$ID, edge_list_sub$ID.y)) %>% dplyr::rename(gene = value)
+
+index_gene_sub_noedge <- index_gene_sub %>% 
+  anti_join(noedge_genes, by = c("ID"="gene")) %>% 
+  dplyr::select(GeneA) %>% distinct(GeneA, .keep_all = TRUE) %>% rowid_to_column(var = "ID")
+
+#cogie_scores_sub_noedge <- cogie_scores_sub %>% 
+ # semi_join(index_gene_sub_noedge, by = c("Range" = "GeneA"))
+
+edge_list_sub_noedge <- index_gene_sub_noedge %>% inner_join(string_hs_interaction_geneNames, by="GeneA") %>% 
+inner_join(index_gene_sub_noedge, by = c("GeneB" = "GeneA")) %>% 
+ dplyr::select(ID.x, ID.y) %>% 
+  drop_na() %>% distinct() 
+
+network_sub_noedge <- index_gene_sub_noedge %>% 
+  inner_join(string_hs_interaction_geneNames, by = "GeneA") %>% 
+  inner_join(index_gene_sub_noedge, by = c("GeneB" = "GeneA")) %>% 
+  dplyr::select(GeneA, GeneB) %>% 
+  drop_na() %>% distinct()
+
+## Write data into tsv files
+writetoFile <- function(var, name){
+  write_tsv(var, path
+=paste0("/Users/sreyoshi.chatterjee/Documents/workspace/projects/VarSubnetDetection/",name), col_names = FALSE)
+}
+
+#writetoFile(network_sub_noedge, "network_1.tsv")
+#writetoFile(edge_list_sub_noedge, "network_1_edge_list.tsv")
+#writetoFile(index_gene_sub_noedge, "network_1_index_gene.tsv")
+#writetoFile(cogie_scores, "scores_1.tsv")
+
+writetoFile(cogie_scores, "scores_1.tsv")
+writetoFile(index_gene_sub,"network_1_index_gene.tsv")
+writetoFile(edge_list_sub, "network_1_edge_list.tsv")
+writetoFile(network_sub, "network_1.tsv")
+```
+
+
+```{r cogie_reactome, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+# cogie scores file : For non-synonymous & lof data
+
+BdiffA <- setdiff(reactome_hs_interaction_genenames$Gene2, reactome_hs_interaction_genenames$Gene1) 
+
+index_gene_reactomehs <- reactome_hs_interaction_genenames %>% dplyr::select(Gene1)   %>% add_row(Gene1 = BdiffA) %>% distinct(Gene1, .keep_all = TRUE) %>% rowid_to_column(var = "ID")
+
+comm_indexReact_cogie <- intersect(index_gene_reactomehs$Gene1, cogie_scores$Range)
+# all(index_gene_reactomehs$Gene1 %in% cogie_scores$Range)
+
+index_gene_reactomehs_cogie <- index_gene_reactomehs %>% 
+  filter(Gene1 %in% comm_indexReact_cogie) %>% dplyr::select(Gene1) %>% 
+  distinct(Gene1, .keep_all = T)  %>% rowid_to_column(var = "ID")
+
+# cogie_scores_reactomehs <- cogie_scores %>% 
+#  filter(Range %in% comm_indexReact_cogie) %>% 
+#  mutate(hscores = round(-log10(scores), 1)) %>% 
+ # dplyr::select(-scores) 
+
+edge_list_reactomehs_cogie <- index_gene_reactomehs_cogie %>% inner_join(reactome_hs_interaction_genenames, by = "Gene1") %>% inner_join(index_gene_reactomehs_cogie, by = c("Gene2" = "Gene1")) %>% 
+  dplyr::select(ID.x, ID.y) %>% 
+  drop_na() %>% distinct()
+
+network_reactomehs_cogie <- index_gene_reactomehs_cogie %>% inner_join(reactome_hs_interaction_genenames, by = "Gene1") %>% inner_join(index_gene_reactomehs_cogie, by = c("Gene2" = "Gene1")) %>% 
+  dplyr::select(Gene1, Gene2) %>% 
+  drop_na() %>% distinct()
+
+writetoFile(network_reactomehs_cogie, "network_2.tsv")
+writetoFile(edge_list_reactomehs_cogie, "network_2_edge_list.tsv")
+writetoFile(index_gene_reactomehs_cogie, "network_2_index_gene.tsv")
+```
+
+
+```{r cogie_reactome_sub, eval = FALSE, echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+
+## This chunk does not need to be evaluated.
+noedge_react_cogie <- as_tibble(setdiff(index_gene_reactomehs_cogie$ID, edge_list_reactomehs_cogie$ID.y)) %>% dplyr::rename(gene = value)
+
+ind_gene_cogiesub_react_noedge <- index_gene_reactomehs_cogie %>% 
+  anti_join(noedge_react_cogie, by = c("ID"="gene")) %>% 
+  dplyr::select(Gene1) %>% distinct(Gene1, .keep_all = TRUE) %>% rowid_to_column(var = "ID")
+
+edge_list_cogiesub_react_noedge <- ind_gene_cogiesub_react_noedge %>% inner_join(reactome_hs_interaction_genenames, by="Gene1") %>% 
+inner_join(ind_gene_cogiesub_react_noedge, by = c("Gene2" = "Gene1")) %>% 
+ dplyr::select(ID.x, ID.y) %>% 
+  drop_na() %>% distinct() 
+
+network_cogiesub_react_noedge <- ind_gene_cogiesub_react_noedge %>% 
+  inner_join(reactome_hs_interaction_genenames, by = "Gene1") %>% 
+  inner_join(ind_gene_cogiesub_react_noedge, by = c("Gene2" = "Gene1")) %>% 
+  dplyr::select(Gene1, Gene2) %>% 
+  drop_na() %>% distinct()
+
+writetoFile(network_cogiesub_react_noedge, "network_2.tsv")
+writetoFile(edge_list_cogiesub_react_noedge, "network_2_edge_list.tsv")
+writetoFile(ind_gene_cogiesub_react_noedge, "network_2_index_gene.tsv")
+```
+
+
+```{r data_epipgx, echo=FALSE, error=FALSE, warning=FALSE, message=FALSE}
+
+## Load the tsv files
+epipgx_lof <- read_tsv(here::here("pvalues","epipgx_lof.tsv"))
+epipgx_nonsyn <- read_tsv(here::here("pvalues","epipgx_nonsyn.tsv"))
+
+##  Select the minimum of the pvalues as heat scores
+epipgx_scores  <- epipgx_lof %>% full_join(epipgx_nonsyn, by ="Range") %>% 
+  mutate(scores = ifelse(PvalueTwoSide.x <= PvalueTwoSide.y & is.na(PvalueTwoSide.x) == FALSE | is.na(PvalueTwoSide.y) == TRUE, PvalueTwoSide.x, PvalueTwoSide.y)) %>% dplyr::select(Range, scores)
+
+```
+
+
+```{r epipgx_string, echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+## The 2 files and the combined data frame have been used directly from the last chunk.
+# string_hs_interaction 
+# string_hs_geneNames 
+# string_hs_interaction_geneNames >=700
+
+## index-gene file
+# index_gene_stringhs
+
+## edge-list file
+# edge_list_stringhs
+
+# length(intersect(index_gene_stringhs$GeneA, epipgx_scores$Range))
+
+comm_indexStr_epipgx <- intersect(index_gene_stringhs$GeneA, epipgx_scores$Range)
+
+ind_gene_episub <- index_gene_stringhs %>% 
+  filter(GeneA %in% comm_indexStr_epipgx) %>% dplyr::select(GeneA) %>% 
+  distinct(GeneA, .keep_all = T)  %>% rowid_to_column(var = "ID") 
+
+edge_list_episub <- ind_gene_episub %>% inner_join(string_hs_interaction_geneNames, by = "GeneA") %>% inner_join(ind_gene_episub, by = c("GeneB" = "GeneA")) %>% 
+  dplyr::select(ID.x, ID.y) %>% 
+  drop_na() %>% distinct()
+
+# length(intersect(edge_list_episub$ID.y, ind_gene_episub$ID))
+
+network_episub <- ind_gene_episub %>% 
+  inner_join(string_hs_interaction_geneNames, by = "GeneA") %>% 
+  inner_join(ind_gene_episub, by = c("GeneB" = "GeneA")) %>% 
+  dplyr::select(GeneA, GeneB) %>% 
+  drop_na() %>% distinct()
+
+writetoFile(ind_gene_episub,"network_1_index_gene.tsv")
+writetoFile(edge_list_episub,"network_1_edge_list.tsv")
+writetoFile(network_episub, "network_1.tsv")
+```
+
+
+```{r epipgx_noedge, echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+noedge_episub <- as_tibble(setdiff(ind_gene_episub$ID, edge_list_episub$ID.y)) %>% dplyr::rename(gene = value)
+
+ind_gene_episub_noedge <- ind_gene_episub %>% 
+  anti_join(noedge_episub, by = c("ID"="gene")) %>% 
+  dplyr::select(GeneA) %>% distinct(GeneA, .keep_all = TRUE) %>% rowid_to_column(var = "ID")
+
+#epipgx_scores_noedge <- epipgx_scores_sub %>% semi_join(ind_gene_episub_noedge, by = c("Range" = "GeneA"))
+
+edge_list_episub_noedge <- ind_gene_episub_noedge %>% inner_join(string_hs_interaction_geneNames, by="GeneA") %>% 
+inner_join(ind_gene_episub_noedge, by = c("GeneB" = "GeneA")) %>% 
+ dplyr::select(ID.x, ID.y) %>% 
+  drop_na() %>% distinct() 
+
+network_episub_noedge <- ind_gene_episub_noedge %>% 
+  inner_join(string_hs_interaction_geneNames, by = "GeneA") %>% 
+  inner_join(ind_gene_episub_noedge, by = c("GeneB" = "GeneA")) %>% 
+  dplyr::select(GeneA, GeneB) %>% 
+  drop_na() %>% distinct()
+
+## Writing the final data into tsv files
+#writetoFile(epipgx_scores_noedge, "scores_1.tsv")
+#writetoFile(ind_gene_episub_noedge,"network_1_index_gene.tsv")
+#writetoFile(edge_list_episub_noedge,"network_1_edge_list.tsv")
+#writetoFile(network_episub_noedge, "network_1.tsv")
+```
+
+
+```{r reactome_epipgx, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+# index-gene file : index_gene_reactomehs
+
+comm_indexReact_epipgx <- intersect(index_gene_reactomehs$Gene1, epipgx_scores$Range)
+
+index_gene_reactomehs_epipgx <- index_gene_reactomehs %>% 
+  filter(Gene1 %in% comm_indexReact_epipgx) %>% dplyr::select(Gene1) %>% 
+  distinct(Gene1, .keep_all = T)  %>% rowid_to_column(var = "ID")
+
+edge_list_reactomehs_epipgx <- index_gene_reactomehs_epipgx %>% inner_join(reactome_hs_interaction_genenames, by = "Gene1") %>% inner_join(index_gene_reactomehs_epipgx, by = c("Gene2" = "Gene1")) %>% 
+  dplyr::select(ID.x, ID.y) %>% 
+  drop_na() %>% distinct()
+
+network_reactomehs_epipgx <- index_gene_reactomehs_epipgx %>% inner_join(reactome_hs_interaction_genenames, by = "Gene1") %>% inner_join(index_gene_reactomehs_epipgx, by = c("Gene2" = "Gene1")) %>% 
+  dplyr::select(Gene1, Gene2) %>% 
+  drop_na() %>% distinct()
+
+writetoFile(epipgx_scores,"scores_1.tsv")
+writetoFile(index_gene_reactomehs_epipgx,"network_2_index_gene.tsv")
+writetoFile(edge_list_reactomehs_epipgx,"network_2_edge_list.tsv")
+writetoFile(network_reactomehs_epipgx, "network_2.tsv")
+```
+
+```{r ssh_upload_iris, eval=FALSE, echo=FALSE, error=FALSE, warning=FALSE, message=FALSE}
+
+#[user@]hostname[:@port]
+#scp_download(session, "~/target/*", to = tempdir())
+session <- ssh_connect("schatterjee@access-iris.uni.lu:8022")
+#file <- c("network_1_index_gene.tsv", "network_1_edge_list.tsv", "network_1.tsv", "network_2.tsv", "scores_1.tsv", "network_2_index_gene.tsv", "network_2_edge_list.tsv")
+file <- c("network_2_index_gene.tsv", "network_2_edge_list.tsv", "network_2.tsv")
+scp_upload(session, file, to = "~/mechEPI_variantAnalysis/hhotnet/cogie/2nw_nonsyn_cp7/data")
+ssh_disconnect(session)
+```
+
+```{r ssh_download_results, eval = FALSE, echo=FALSE, error=FALSE, warning=FALSE, message=FALSE }
+session <- ssh_connect("schatterjee@access-iris.uni.lu:8022")
+#file <- c("clusters_network_1_scores_1.tsv", "clusters_network_2_scores_1.tsv", "consensus_edges.tsv", "consensus_nodes.tsv", "sizes_network_1_scores_1.pdf", "sizes_network_2_scores_1.pdf")
+scp_download(session, "~/mechEPI_variantAnalysis/hhotnet/cogie/2nw_cogie_nonsyn_cp7/results/*", to = "~/Documents/mechEPI_variantAnalysis/results/cogie/2nw_nonsyn_cp7/")
+ssh_disconnect(session)
+```
+
+## Data Pre-processing
+
+* The files prepared according to the instructions of Hierarchical Hotnet [@reyna2018hierarchical]
+* __Generated files__ :
+  * scores file : genes with heat scores, generated from variant data
+  * index_gene file: A subset of the interaction data, generated by intersection of interaction data and variant data 
+  * edge_list file: Connections representing the interaction data
+* The input files were then uploaded to Iris cluster (Uni LU's HPC system) via scp
+
+```{r gene_scores, echo = FALSE, error=FALSE, message=FALSE, warning=FALSE}
+
+gene_scores <- data.frame(Datasets = c("cogie", "epipgx"),
+                     lof = c(8060,8720),
+                     non_syn = c(15185,17067),
+                     selected_hierarchical_hotnet = c(15892, 17461))
+```
+
+### Variant Data
+
+* Variant datasets : CoGIE, EpiPGX
+* Data type : Genes with p-values
+* Data description : loss of function mutations, non-synonymous mutations and synonymous mutations.From these, the synonymous mutations are to be used as controls, hence left out from this analysis 
+* The p-values were converted to heat scores by the formula : _-log10(p-value)_
+
+```{r var_data, eval=FALSE,echo=FALSE, warning=FALSE, message=FALSE, out.width= "500px", out.height="200px", fig.align='left',fig.cap="Gene inclusion procedure"}
+knitr::include_graphics("/Users/sreyoshi.chatterjee/Documents/workspace/projects/VarSubnetDetection/var_data.001.jpeg") 
+```
+
+Summary of the genes shortlisted for this analysis : 
+
+`r gene_scores %>% kable("html",escape = F, align = "l") %>% kable_styling( bootstrap_options = c('striped', 'hover', 'responsive', 'condensed'))`
+
+### Interaction Data
+
+Each interaction network is treated as undirected and unweighted. 
+The following table summarizes the interaction data that have been considered : 
+
+`r int_db %>% kable("html",escape = F, align = "l") %>% pack_rows("Cogie", 1,2) %>% pack_rows("Epipgx",3,4) %>% column_spec(1, width = '3cm')`
+
+## Subnetwork Detection {.tabset .tabset-fade .tabset-pills}
+
+* The altered subnetworks have been detected based on the algorithm of Hierarchical Hotnet [@reyna2018hierarchical] 
+* From the detected subnetworks, consensus results have been considered for downstream over-representation analysis 
+* GNU parallelization [@tange2018gnu] has been used in order to utilize the performance of the Iris cluster optimally 
+
+The following sections show the resulting clusters and their statistics for each combination of the variant and interaction data  
+
+### CoGIE
+
+
+Interaction database : __String__ 
+```{r cogie_clusters, echo=FALSE, warning=FALSE, error = FALSE, message=FALSE}
+
+cogie_clusters_network1 <- read_delim(here::here("results", "cogie", "2nw_nonsyn_cp7", "clusters_network_1_scores_1.tsv"), delim = "\n") 
+cogie_clusters_network1 %>% kable("html",escape = F, align = "l") %>% kable_styling( bootstrap_options = c('striped', 'hover', 'responsive', 'condensed')) %>% scroll_box(width = "1000px", height = "500px")
+```
+
+Interaction database : __Reactome__ 
+```{r , echo=FALSE, warning=FALSE, error = FALSE, message=FALSE}
+cogie_clusters_network2 <- read_delim(here::here("results", "cogie", "2nw_nonsyn_cp7", "clusters_network_2_scores_1.tsv"), delim = "\n") 
+cogie_clusters_network2 %>% kable("html",escape = F, align = "l") %>% kable_styling( bootstrap_options = c('striped', 'hover', 'responsive', 'condensed')) %>% scroll_box(width = "1000px", height = "500px")
+```
+
+### EpiPGX
+
+Interaction database : __String__ 
+```{r epipgx_cluster_n1, echo=FALSE, warning=FALSE, error = FALSE, message=FALSE}
+
+epipgx_clusters_network1 <- read_delim(here::here("results", "epipgx", "2nw_nonsyn_cp9", "clusters_network_1_scores_1.tsv"), delim = "\n") 
+epipgx_clusters_network1 %>% kable("html",escape = F, align = "l") %>% kable_styling( bootstrap_options = c('striped', 'hover', 'responsive', 'condensed')) %>% scroll_box(width = "1000px", height = "500px")
+```
+
+Interaction database : __Reactome__ 
+```{r , echo=FALSE, warning=FALSE, error = FALSE, message=FALSE}
+epipgx_clusters_network2 <- read_delim(here::here("results", "epipgx", "2nw_nonsyn_cp9", "clusters_network_2_scores_1.tsv"), delim = "\n") 
+epipgx_clusters_network2 %>% kable("html",escape = F, align = "l") %>% kable_styling( bootstrap_options = c('striped', 'hover', 'responsive', 'condensed')) %>% scroll_box(width = "1000px", height = "500px")
+```
+
+
+## Consensus Subnetwork Identification
+```{r consensus, echo=FALSE, warning=FALSE, message=FALSE, out.width= "400px", out.height="400px", fig.align='center'}
+knitr::include_graphics("/Users/sreyoshi.chatterjee/Documents/mechEPI_variantAnalysis/diagram/consensus.001.jpeg")
+```
+
+* An additional feature of Hierarchical Hotnet  as compared to its competitors heinz, MUFFIN and NetSig 
+* The consesus nodes and edges are determined after the construction of resulting subnetworks, which may reduce network and score artifacts [@reyna2018hierarchical] 
+* For now, the __threshold__ parameter is set as 0
+
+
+## Over Representation Analysis {.tabset .tabset-fade .tabset-pills}
+* Over representation analysis aims at determining whether the biological processes/pathways are enriched in a derived gene list (either experimentally or through some statistical analysis)  
+* Here, the consensus nodes identified in the previous step is the gene list for the clusterProfiler[@clusterProfiler] package in R 
+* The function _enrichGO_ has been used and  _Molecular Functions_ ontology are looked for.
+
+```{r all_functions, echo=FALSE,  error=FALSE, message=FALSE, warning=FALSE}
+
+# performing go enrichment analysis
+call_enrichGO <- function(enrich_nodes){
+    enrichGO(
+    gene = enrich_nodes,
+    keyType = "SYMBOL",
+    OrgDb   = org.Hs.eg.db,
+    ont = "MF",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 1,
+    pAdjustMethod = "BH"
+  )
+}
+
+# creating dotplot
+create_dotplot <- function( enrich_out,num, name) {
+  dotplot(enrich_out, showCategory = num, font.size = 8, title = name)
+}
+
+#creating cnet plot
+#create_cnetplot <- function(enrich_out){
+#p1 <- cnetplot(enrich_out)
+#p2 <- cnetplot(enrich_out, categorySize = "genenum")
+#p3 <- cnetplot(enrich_out, circular = TRUE, colorEdge = TRUE)
+#cowplot::plot_grid(  p1,p3, ncol = 2,labels = LETTERS[1:3],rel_widths = c(.5, .5, 1.2))}
+
+```
+
+### CoGIE 
+Number of consensus nodes identified : 187
+
+```{r consensus_cogie, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+# The path I follow is : genes of interest --> enrichGO --> DOSE(enrichDO??) --> plots
+
+# Background genes cogie
+# dim(index_gene_sub_noedge)
+# dim(ind_gene_cogiesub_react_noedge)
+
+#background_genes_cogie <-index_gene_sub_noedge %>% full_join(ind_gene_cogiesub_react_noedge, by = c("GeneA" = "Gene1")) %>%   dplyr::select(GeneA)
+
+#Preparing the consensus nodes
+consensus_nodes_cogie <-
+  read_delim(
+    here::here("results", "cogie", "2nw_nonsyn_cp7", "consensus_nodes.tsv"),
+    delim = "\t",
+    col_names = FALSE)
+consensus_nodes_C <-paste(unlist(consensus_nodes_cogie)) %>% 
+  as_tibble() %>% 
+  filter(!value == "NA")
+colnames(consensus_nodes_C) <- NULL
+consensus_nodes_C <- as.matrix(consensus_nodes_C)
+
+# Cal the enrichGO function 
+concogie_enrich_go <- call_enrichGO(consensus_nodes_C)
+
+head(summary(concogie_enrich_go),10) %>% kable("html",escape = F, align = "l") %>% 
+  kable_styling( bootstrap_options = c('striped', 'hover', 'responsive', 'condensed')) %>% 
+  scroll_box(width = "1000px", height = "500px")
+
+# Dotplot showing the top10 biological processes
+create_dotplot(concogie_enrich_go, 10, "Enriched terms CoGIE")
+
+# cnet plot showing gene network relationship
+cnetplot(concogie_enrich_go, showCategory = 5) + ggtitle("\n\nCoGIE: Gene network relationship")
+
+# Heatplot showing the genes involved in each of the processes 
+ heatplot(concogie_enrich_go,  showCategory = 10) + theme(
+  axis.text.x = element_text(size = 6),
+  axis.text.y = element_text(size = 7)) + 
+   ggtitle( "\n\n Heatplot for consensus CoGIE")
+
+#emapplot : Not so much required in mycase
+#emapplot(concogie_enrich_go, showCategory = 10, layout = "kk")
+
+```
+
+### EpiPGX
+Number of identified consensus nodes : 406
+```{r consensus_epipgx, echo=FALSE, error=FALSE, warning=FALSE, message=FALSE}
+# The path I follow is : genes of interest --> enrichGO --> DOSE(enrichDO??) --> plots
+
+# dim(index_gene_reactomehs_epipgx)
+# dim(ind_gene_episub)
+
+#Background genes epipgx
+background_genes <-
+  ind_gene_episub %>% 
+  full_join(index_gene_reactomehs_epipgx, by = c("GeneA"="Gene1")) %>%
+  dplyr::select(GeneA)
+
+#Preparing  the consensus nodes
+consensus_nodes_epipgx <-
+  read_delim(
+    here::here("results", "epipgx", "2nw_nonsyn_cp9", "consensus_nodes.tsv"),
+    delim = "\t",
+    col_names = FALSE) 
+names(consensus_nodes_epipgx) <- NULL
+consensus_nodes <- str_split_fixed(consensus_nodes_epipgx, " ", 1)
+
+con_enrich_go <- call_enrichGO(consensus_nodes)
+head(summary(con_enrich_go)) %>% kable("html",escape = F, align = "l") %>% 
+  kable_styling( bootstrap_options = c('striped', 'hover', 'responsive', 'condensed')) %>% 
+  scroll_box(width = "1000px", height = "500px")
+
+# Dotplot showing the top10 biological processes
+create_dotplot(con_enrich_go, 10, "Enriched terms EpiPGX") 
+
+# cnet plot
+cnetplot(con_enrich_go) + ggtitle("\n\nEpiPGX : Gene network relationship")
+
+# Heatplot showing the genes involved in each of the processes
+ heatplot(con_enrich_go,  showCategory = 10) + theme(
+  axis.text.x = element_text(size = 6),
+  axis.text.y = element_text(size = 7)) + ggtitle( "\n\nHeatplot for consensus EpiPGX")
+
+```
+
+
+## Updated analysis with Lof and Non-syn mutations separately{.tabset .tabset-fade .tabset-pills}
+
+```{r iris_status, echo=FALSE, warning=FALSE, message=FALSE, out.width= "400px", out.height="200px", fig.align='left',fig.cap="Iris Job status"}
+knitr::include_graphics("/Users/sreyoshi.chatterjee/Documents/mechEPI_variantAnalysis/diagram/job_status.001.jpeg") 
+```
+
+* Gene scores used : p-values and Odds Ratio 
+* Number of permutations : 100
+ 
+### CoGIE
+
+#### Lof
+* Debugging
+
+#### Non-syn
+* String + oddsRatio combination still running
+* The results below show the consensus plots from the completed runs
+* Consensus node count : 79 
+
+```{r co_nonsyn, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+<<co_nonsynplots>>
+```
+
+### EpiPGX
+
+#### Lof
+* Consensus node count : 31 
+
+```{r lof, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+<<lofplots>>
+```
+
+#### Non-syn
+* Consensus node count : 175 
+
+```{r nonsyn, echo=FALSE, error=FALSE, message=FALSE, warning=FALSE}
+<<nonsynplots>>
+```
+
+
+## Challenges
+* The threshold parameter of the consensus network identification has to be looked into further
+* Iris troubles has to be solved
+
+
+## Steps Forward...
+* Individual cluster analysis 
+* Compare this tool with other methods like WGCNA
+* EpiFunc data ?
+
+## Bibliography
+
+<div id="refs"></div>
+
+## Appendix
+
+### CoGIE
+* 152 individuals with Genetic Generalised Epilepsy
+* Of these, 143 cases were derived from multiplex families with at least 2 affected family members, of which 76 families had at least 3 or more affected family members.
+
+#### Preliminary results of the String DB (CP:0.7){.tabset .tabset-fade .tabset-pills} 
+
+##### Permutations :5 -->
+* This is with cogie synonymous mutations
+* Number of genes : 8,762 
+* Number of interactions : 250676 
+
+* largest cluster cut-height : 49
+* p value : 1.0
+* Visualization : TBD
+
+##### Permutations :10
+* This is without the usage of synonymous mutations
+* Number of genes :13,998
+* Number of interactions : 5,74,942 
+
+* largest cluster cut-height : 127
+* p value : 0.8
+* Pathways :
+  * organic anion transport : ABCC5,SLC22A7,SLC10A1,SLCO2B1,ABCC3,SLCO1B3,SLCO1B1,SLCO1A2,ABCC2, 4.01, 8.1e-12
+  * organic cation transport : SLC22A4,SLC22A1,SLC22A2, 2.66, 6.4e-03
+  * response to sucrose stimulus :  LCT, SI, 1.24, 2.0e-01
+  * protein N-linked glycosylation : MOGS, DPAGT1, ALG8, MAN1B1, 1.67, 2.5e-03
+
+
+#### Preliminary results of the String DB(CP:0.9){.tabset .tabset-fade .tabset-pills} 
+
+##### Permutations :10
+* This is without synonymous mutations
+* Number of genes : 10,087
+* Number of interactions : 3,45,476
+* largest cluster cut-height : 183
+* p value :0.1
+* Pathways : 
+
+### EpiPGX
+
+* 357 Genetic Generalised Epilepsy cases were collected by the EpiPGX consortium
+* From this, 92 cases were derived from families with atleast 2 affected members
+* 131 cases were sporadic and for the remaining 134 cases, familial history was not known. 
+
+#### Preliminary results of the String DB (CP:0.9){.tabset .tabset-fade .tabset-pills}  
+
+* Number of genes : 10970 
+* Number of interactions : 404402 
+
+##### Permutations : 5
+* largest cluster cut-height : 600
+* p value : 0.6
+* Pathways :
+  *  Tryptophan catabolic process: HAAO,ACMSD,KYNU,IDO1,KMO, 4.18, 7.8e-04
+  * tRNA aminocylation for proteintranslation: MARS,DARS,CARS2,HARS,TARS,EARS2,NARS,LARS2,QARS,FARSB,FARSA,LARS,EEF1E1,SARS,PARS2,EPRS,KARS,GARS,AIMP2, 3.24,2.1e-13
+  * Neurotransmitter biosynthetic process: GAD1,MAOA,SLC6A3,PAH,2.68, 2.2e-02
+  * Negative regulation of axonogenesis: MAG,RTN4R,MBP,PTEN,RTN4,OMG,2.68, 1.3e-03
+  * Smoothened signalling pathway : HHIP,HES1,DISP2,BOC,PTCH1,NKX2-2,NKX6-1,FKBP8,SMO,IHH,HHAT, 2.15, 8.8e-06
+  * Brain morphogenesis : PTEN,BBS4,SLC6A4, 2.13, 1.2e-01
+  * Forebrain morphogenesis : PTEN,SMO,SLIT1, 2.13, 1.2e-01 
+  
+##### Permutations : 10
+* largest cluster cut-height : 50
+* p value : 0.5
+* Pathways :
+  * Gamma amniobutryic acid signalling pathway : GABRA4, GABRA6, XD :0.828, qval: 1.e-01
+  * Ion transmembrane transport : GLRB, GLRA1, GABRA4, GABRB1, GABRB3, GABRB6, XD : 0.765, qval: 2.9e-05 
+  
+#### Preliminary results of the String DB (CP:0.7){.tabset .tabset-fade .tabset-pills} 
+
+* Number of genes : 15,092
+* Number of interactions : 6,73,044
+
+##### Permutations : 5
+
+* Processing
+
+##### Permutations : 10
+
+* Processing
